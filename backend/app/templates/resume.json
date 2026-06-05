@@ -1,0 +1,19 @@
+{
+  "task_type": "resume",
+  "name": "Resume Writer",
+  "description": "A starter template for structured resume writing tasks.",
+  "steps": [
+    {
+      "id": "collect_basics",
+      "title": "Collect basic candidate information"
+    },
+    {
+      "id": "clarify_target",
+      "title": "Clarify role target and resume style"
+    },
+    {
+      "id": "draft_resume",
+      "title": "Draft the first resume version"
+    }
+  ]
+}
