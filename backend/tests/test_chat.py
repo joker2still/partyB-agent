@@ -28,8 +28,17 @@ def test_chat_routes_resume_request(monkeypatch) -> None:
     assert body["debug"]["stage"] == "collect_info"
     assert body["debug"]["task_router_result"]["task_type"] == "resume"
     assert body["debug"]["task_router_result"]["confidence"] == 0.9
+    assert body["debug"]["task_template_loaded"] is True
+    assert body["debug"]["required_slots"] == [
+        "target_position",
+        "education",
+        "work_experience",
+        "project_experience",
+    ]
     assert body["debug"]["history_count"] == 2
-    assert "\u5199\u7b80\u5386" in body["reply"]
+    assert "\u4f60\u60f3\u6295\u4ec0\u4e48\u5c97\u4f4d" in body["reply"]
+    assert "\u8bf7\u544a\u8bc9\u6211\u4f60\u7684\u6559\u80b2\u7ecf\u5386" in body["reply"]
+    assert "\u8bf7\u544a\u8bc9\u6211\u4f60\u7684\u5de5\u4f5c\u7ecf\u5386" in body["reply"]
 
 
 def test_chat_routes_unknown_request(monkeypatch) -> None:
@@ -60,6 +69,8 @@ def test_chat_routes_unknown_request(monkeypatch) -> None:
     assert body["debug"]["task_type"] == "unknown"
     assert body["debug"]["stage"] == "clarify_task"
     assert body["debug"]["task_router_result"]["task_type"] == "unknown"
+    assert body["debug"]["task_template_loaded"] is False
+    assert body["debug"]["required_slots"] == []
     assert body["debug"]["history_count"] == 2
     assert "\u6211\u8fd8\u4e0d\u786e\u5b9a" in body["reply"]
 
@@ -98,4 +109,11 @@ def test_chat_uses_normal_llm_reply_after_start(monkeypatch) -> None:
     assert body["debug"]["task_type"] == "resume"
     assert body["debug"]["stage"] == "collect_info"
     assert body["debug"]["task_router_result"] is None
+    assert body["debug"]["task_template_loaded"] is True
+    assert body["debug"]["required_slots"] == [
+        "target_position",
+        "education",
+        "work_experience",
+        "project_experience",
+    ]
     assert body["debug"]["history_count"] == 2
