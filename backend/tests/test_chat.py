@@ -2,64 +2,100 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services import state_store
+from app.services.state_store import get_or_create_state, save_state
 
 
 client = TestClient(app)
 
 
-def test_chat_returns_reply_and_debug(monkeypatch) -> None:
+def test_chat_routes_resume_request(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
-    raw_message = "\u6d4b\u8bd5\u6d88\u606f"
-    llm_reply = "\u5df2\u7406\u89e3\u4f60\u7684\u9700\u6c42\u3002"
+    async def fail_if_called(_: str) -> str:
+        raise AssertionError("call_llm should not be used for keyword-based routing")
 
-    async def fake_call_llm(prompt: str) -> str:
-        assert raw_message in prompt
-        return llm_reply
-
-    monkeypatch.setattr("app.main.call_llm", fake_call_llm)
+    monkeypatch.setattr("app.main.call_llm", fail_if_called)
 
     response = client.post(
         "/chat",
-        json={"session_id": None, "message": raw_message},
+        json={"session_id": None, "message": "\u5e2e\u6211\u5199\u7b80\u5386"},
     )
 
     body = response.json()
 
     assert response.status_code == 200
-    assert isinstance(body["session_id"], str)
-    assert body["session_id"]
-    assert body["reply"] == llm_reply
-    assert body["debug"]["session_id"] == body["session_id"]
-    assert body["debug"]["raw_message"] == raw_message
-    assert body["debug"]["task_type"] is None
-    assert body["debug"]["stage"] == "start"
-    assert body["debug"]["slots"] == {}
-    assert body["debug"]["missing_slots"] == []
+    assert body["debug"]["task_type"] == "resume"
+    assert body["debug"]["stage"] == "collect_info"
+    assert body["debug"]["task_router_result"]["task_type"] == "resume"
+    assert body["debug"]["task_router_result"]["confidence"] == 0.9
     assert body["debug"]["history_count"] == 2
+    assert "\u5199\u7b80\u5386" in body["reply"]
 
 
-def test_chat_reuses_session_and_accumulates_history(monkeypatch) -> None:
+def test_chat_routes_unknown_request(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
-    async def fake_call_llm(_: str) -> str:
-        return "ack"
+    async def fake_detect_task_type(message: str) -> dict:
+        assert message == "do something"
+        return {
+            "task_type": "unknown",
+            "confidence": 0.4,
+            "reason": "not enough signal",
+        }
+
+    async def fail_if_called(_: str) -> str:
+        raise AssertionError("call_llm should not be used during start-stage routing")
+
+    monkeypatch.setattr("app.main.detect_task_type", fake_detect_task_type)
+    monkeypatch.setattr("app.main.call_llm", fail_if_called)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": None, "message": "do something"},
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["debug"]["task_type"] == "unknown"
+    assert body["debug"]["stage"] == "clarify_task"
+    assert body["debug"]["task_router_result"]["task_type"] == "unknown"
+    assert body["debug"]["history_count"] == 2
+    assert "\u6211\u8fd8\u4e0d\u786e\u5b9a" in body["reply"]
+
+
+def test_chat_uses_normal_llm_reply_after_start(monkeypatch) -> None:
+    state_store._STATE_STORE.clear()
+
+    state = get_or_create_state("existing-session")
+    state.task_type = "resume"
+    state.stage = "collect_info"
+    save_state(state)
+
+    raw_message = "\u8fd9\u662f\u6211\u7684\u6559\u80b2\u7ecf\u5386"
+    llm_reply = "\u6211\u5df2\u7ecf\u4e86\u89e3\u4f60\u7684\u6559\u80b2\u80cc\u666f\u3002"
+
+    async def fake_call_llm(prompt: str) -> str:
+        assert raw_message in prompt
+        return llm_reply
+
+    async def fail_if_called(_: str) -> dict:
+        raise AssertionError("detect_task_type should not be called after start stage")
 
     monkeypatch.setattr("app.main.call_llm", fake_call_llm)
+    monkeypatch.setattr("app.main.detect_task_type", fail_if_called)
 
-    first_response = client.post(
+    response = client.post(
         "/chat",
-        json={"session_id": None, "message": "first"},
-    )
-    session_id = first_response.json()["session_id"]
-
-    second_response = client.post(
-        "/chat",
-        json={"session_id": session_id, "message": "second"},
+        json={"session_id": "existing-session", "message": raw_message},
     )
 
-    second_body = second_response.json()
+    body = response.json()
 
-    assert second_response.status_code == 200
-    assert second_body["session_id"] == session_id
-    assert second_body["debug"]["history_count"] == 4
+    assert response.status_code == 200
+    assert body["session_id"] == "existing-session"
+    assert body["reply"] == llm_reply
+    assert body["debug"]["task_type"] == "resume"
+    assert body["debug"]["stage"] == "collect_info"
+    assert body["debug"]["task_router_result"] is None
+    assert body["debug"]["history_count"] == 2
