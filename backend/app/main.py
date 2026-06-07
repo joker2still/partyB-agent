@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.slot_checker import check_missing_slots
+from app.agents.slot_extractor import extract_slots
 from app.agents.task_router import detect_task_type
 from app.core.config import get_settings
 from app.models.chat import ChatRequest, ChatResponse
@@ -34,6 +36,12 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     task_router_result: dict | None = None
     task_template_loaded = False
     required_slots: list[str] = []
+    extracted_slots: dict = {}
+    slot_extractor_called = False
+    slot_extractor_raw_output = ""
+    slot_extractor_parse_success = False
+    slots_before = dict(state.slots)
+    slots_after = dict(state.slots)
 
     if state.stage == "start":
         task_router_result = await detect_task_type(payload.message)
@@ -79,6 +87,50 @@ async def chat(payload: ChatRequest) -> ChatResponse:
                 "\u4ea7\u51fa\u4ec0\u4e48\uff0c\u6bd4\u5982\u7b80\u5386\u3001PPT\u3001\u65b9\u6848\u3001"
                 "\u6587\u6848\u6216\u4ee3\u7801\u9879\u76ee\u3002"
             )
+    elif state.stage == "collect_info":
+        template = load_task_template(state.task_type or "")
+        task_template_loaded = bool(template)
+        required_slots = template.get("required_slots", []) if template else []
+
+        slot_extractor_called = True
+        extraction_result = await extract_slots(payload.message, template, state.slots)
+        slot_extractor_raw_output = extraction_result.get("raw_llm_output", "")
+        slot_extractor_parse_success = bool(extraction_result.get("parse_success", False))
+        extracted_slots = extraction_result.get("updated_slots", {})
+        state.slots = extracted_slots if isinstance(extracted_slots, dict) else dict(state.slots)
+        slots_after = dict(state.slots)
+        state.missing_slots = check_missing_slots(template, state.slots)
+
+        if state.missing_slots:
+            slot_questions = template.get("slot_questions", {}) if template else {}
+            follow_up_slots = state.missing_slots[:2]
+            question_lines = []
+            for index, slot_name in enumerate(follow_up_slots, start=1):
+                question = slot_questions.get(slot_name)
+                if isinstance(question, str) and question.strip():
+                    question_lines.append(f"{index}. {question}")
+
+            if question_lines:
+                reply = (
+                    "\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u3002"
+                    "\u73b0\u5728\u8fd8\u7f3a\u5c11\u4e0b\u9762\u51e0\u9879\uff1a\n\n"
+                    + "\n".join(question_lines)
+                    + "\n\n"
+                    + "\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u3002"
+                )
+            else:
+                reply = (
+                    "\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u3002"
+                    "\u8fd8\u6709\u4e9b\u5fc5\u586b\u9879\u672a\u8865\u5168\uff0c\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u3002"
+                )
+        else:
+            state.stage = "confirm_style"
+            reply = (
+                "\u57fa\u7840\u4fe1\u606f\u5df2\u7ecf\u591f\u4e86\u3002"
+                "\u63a5\u4e0b\u6765\u6211\u60f3\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff1a"
+                "\u4f60\u5e0c\u671b\u504f \u7b80\u6d01\u4e13\u4e1a\u3001\u6280\u672f\u786c\u6838\u3001"
+                "\u8bbe\u8ba1\u611f\u5f3a\uff0c\u8fd8\u662f\u9002\u5408\u5e94\u5c4a\u751f\uff1f"
+            )
     else:
         if state.task_type:
             template = load_task_template(state.task_type)
@@ -111,6 +163,12 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             "stage": state.stage,
             "slots": state.slots,
             "missing_slots": state.missing_slots,
+            "extracted_slots": extracted_slots,
+            "slot_extractor_called": slot_extractor_called,
+            "slot_extractor_raw_output": slot_extractor_raw_output,
+            "slot_extractor_parse_success": slot_extractor_parse_success,
+            "slots_before": slots_before,
+            "slots_after": slots_after,
             "history_count": len(state.history),
             "task_router_result": task_router_result,
             "task_template_loaded": task_template_loaded,

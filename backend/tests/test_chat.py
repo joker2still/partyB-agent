@@ -1,11 +1,58 @@
 from fastapi.testclient import TestClient
 
+from app.agents.slot_extractor import fallback_extract_slots, robust_json_parse
 from app.main import app
 from app.services import state_store
 from app.services.state_store import get_or_create_state, save_state
 
 
 client = TestClient(app)
+
+
+def test_robust_json_parse_supports_fenced_json() -> None:
+    raw_text = """```json
+{
+  "updated_slots": {
+    "target_position": "AI Agent 开发岗位",
+    "education": "",
+    "work_experience": "暂无",
+    "project_experience": ""
+  },
+  "reason": "parsed"
+}
+```"""
+
+    parsed = robust_json_parse(raw_text)
+
+    assert parsed is not None
+    assert parsed["updated_slots"]["target_position"] == "AI Agent 开发岗位"
+    assert parsed["updated_slots"]["work_experience"] == "暂无"
+
+
+def test_fallback_extract_slots_handles_resume_message() -> None:
+    template = {
+        "required_slots": [
+            "target_position",
+            "education",
+            "work_experience",
+            "project_experience",
+        ],
+        "optional_slots": [],
+    }
+    message = (
+        "我想投 AI Agent 开发岗位，本科是浙江工商大学大数据专业，2023年毕业。"
+        "我有一个 Agentic RAG 本地知识库项目，用 FastAPI、React、Ollama、Qdrant 做的。"
+        "工作经历暂时先不写。"
+    )
+
+    slots = fallback_extract_slots(message, template, {})
+
+    assert slots == {
+        "target_position": "AI Agent 开发岗位",
+        "education": "浙江工商大学大数据专业本科，2023年毕业",
+        "work_experience": "暂无",
+        "project_experience": "我有一个 Agentic RAG 本地知识库项目，用 FastAPI、React、Ollama、Qdrant 做的，技术栈 FastAPI、React、Ollama、Qdrant",
+    }
 
 
 def test_chat_routes_resume_request(monkeypatch) -> None:
@@ -18,7 +65,7 @@ def test_chat_routes_resume_request(monkeypatch) -> None:
 
     response = client.post(
         "/chat",
-        json={"session_id": None, "message": "\u5e2e\u6211\u5199\u7b80\u5386"},
+        json={"session_id": None, "message": "帮我写简历"},
     )
 
     body = response.json()
@@ -36,84 +83,157 @@ def test_chat_routes_resume_request(monkeypatch) -> None:
         "project_experience",
     ]
     assert body["debug"]["history_count"] == 2
-    assert "\u4f60\u60f3\u6295\u4ec0\u4e48\u5c97\u4f4d" in body["reply"]
-    assert "\u8bf7\u544a\u8bc9\u6211\u4f60\u7684\u6559\u80b2\u7ecf\u5386" in body["reply"]
-    assert "\u8bf7\u544a\u8bc9\u6211\u4f60\u7684\u5de5\u4f5c\u7ecf\u5386" in body["reply"]
+    assert "你想投什么岗位" in body["reply"]
+    assert "请告诉我你的教育经历" in body["reply"]
+    assert "请告诉我你的工作经历" in body["reply"]
 
 
-def test_chat_routes_unknown_request(monkeypatch) -> None:
+def test_chat_collect_info_uses_extracted_slots_and_enters_confirm_style(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
-    async def fake_detect_task_type(message: str) -> dict:
-        assert message == "do something"
+    state = get_or_create_state("resume-session")
+    state.task_type = "resume"
+    state.stage = "collect_info"
+    save_state(state)
+
+    raw_output = """
+这里是结果：
+```json
+{
+  "updated_slots": {
+    "target_position": "AI Agent 开发岗位",
+    "education": "浙江工商大学大数据专业本科，2023年毕业",
+    "work_experience": "暂无",
+    "project_experience": "Agentic RAG 本地知识库项目，技术栈 FastAPI、React、Ollama、Qdrant"
+  },
+  "reason": "用户已提供完整基础信息"
+}
+```"""
+
+    async def fake_extract_slots(message: str, task_template: dict, current_slots: dict) -> dict:
+        assert message.startswith("我想投 AI Agent 开发岗位")
+        assert task_template["task_type"] == "resume"
+        assert current_slots == {}
         return {
-            "task_type": "unknown",
-            "confidence": 0.4,
-            "reason": "not enough signal",
+            "updated_slots": {
+                "target_position": "AI Agent 开发岗位",
+                "education": "浙江工商大学大数据专业本科，2023年毕业",
+                "work_experience": "暂无",
+                "project_experience": "Agentic RAG 本地知识库项目，技术栈 FastAPI、React、Ollama、Qdrant",
+            },
+            "reason": "用户已提供完整基础信息",
+            "raw_llm_output": raw_output,
+            "parse_success": True,
         }
 
-    async def fail_if_called(_: str) -> str:
-        raise AssertionError("call_llm should not be used during start-stage routing")
-
-    monkeypatch.setattr("app.main.detect_task_type", fake_detect_task_type)
-    monkeypatch.setattr("app.main.call_llm", fail_if_called)
+    monkeypatch.setattr("app.main.extract_slots", fake_extract_slots)
 
     response = client.post(
         "/chat",
-        json={"session_id": None, "message": "do something"},
+        json={
+            "session_id": "resume-session",
+            "message": (
+                "我想投 AI Agent 开发岗位，本科是浙江工商大学大数据专业，2023年毕业。"
+                "我有一个 Agentic RAG 本地知识库项目，用 FastAPI、React、Ollama、Qdrant 做的。"
+                "工作经历暂时先不写。"
+            ),
+        },
     )
 
     body = response.json()
 
     assert response.status_code == 200
-    assert body["debug"]["task_type"] == "unknown"
-    assert body["debug"]["stage"] == "clarify_task"
-    assert body["debug"]["task_router_result"]["task_type"] == "unknown"
-    assert body["debug"]["task_template_loaded"] is False
-    assert body["debug"]["required_slots"] == []
-    assert body["debug"]["history_count"] == 2
-    assert "\u6211\u8fd8\u4e0d\u786e\u5b9a" in body["reply"]
+    assert body["debug"]["slot_extractor_called"] is True
+    assert body["debug"]["slot_extractor_parse_success"] is True
+    assert body["debug"]["slot_extractor_raw_output"] == raw_output
+    assert body["debug"]["slots_before"] == {}
+    assert body["debug"]["slots_after"] == {
+        "target_position": "AI Agent 开发岗位",
+        "education": "浙江工商大学大数据专业本科，2023年毕业",
+        "work_experience": "暂无",
+        "project_experience": "Agentic RAG 本地知识库项目，技术栈 FastAPI、React、Ollama、Qdrant",
+    }
+    assert body["debug"]["extracted_slots"] == body["debug"]["slots_after"]
+    assert body["debug"]["missing_slots"] == []
+    assert body["debug"]["stage"] == "confirm_style"
+    assert "简历风格" in body["reply"]
 
 
-def test_chat_uses_normal_llm_reply_after_start(monkeypatch) -> None:
+def test_chat_collect_info_falls_back_to_rules_when_parse_fails(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
-    state = get_or_create_state("existing-session")
+    state = get_or_create_state("fallback-session")
     state.task_type = "resume"
     state.stage = "collect_info"
     save_state(state)
 
-    raw_message = "\u8fd9\u662f\u6211\u7684\u6559\u80b2\u7ecf\u5386"
-    llm_reply = "\u6211\u5df2\u7ecf\u4e86\u89e3\u4f60\u7684\u6559\u80b2\u80cc\u666f\u3002"
+    async def fake_extract_slots(message: str, task_template: dict, current_slots: dict) -> dict:
+        assert "工作经历暂时先不写" in message
+        return {
+            "updated_slots": {
+                "target_position": "AI Agent 开发岗位",
+                "education": "浙江工商大学大数据专业本科，2023年毕业",
+                "work_experience": "暂无",
+                "project_experience": "Agentic RAG 本地知识库项目，技术栈 FastAPI、React、Ollama、Qdrant",
+            },
+            "reason": "LLM 返回无法解析为 JSON，已使用规则兜底",
+            "raw_llm_output": "not json",
+            "parse_success": False,
+        }
+
+    monkeypatch.setattr("app.main.extract_slots", fake_extract_slots)
+
+    response = client.post(
+        "/chat",
+        json={
+            "session_id": "fallback-session",
+            "message": (
+                "我想投 AI Agent 开发岗位，本科是浙江工商大学大数据专业，2023年毕业。"
+                "我有一个 Agentic RAG 本地知识库项目，用 FastAPI、React、Ollama、Qdrant 做的。"
+                "工作经历暂时先不写。"
+            ),
+        },
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["debug"]["slot_extractor_called"] is True
+    assert body["debug"]["slot_extractor_parse_success"] is False
+    assert body["debug"]["slot_extractor_raw_output"] == "not json"
+    assert body["debug"]["missing_slots"] == []
+    assert body["debug"]["stage"] == "confirm_style"
+
+
+def test_chat_uses_normal_llm_reply_after_collect_info(monkeypatch) -> None:
+    state_store._STATE_STORE.clear()
+
+    state = get_or_create_state("review-session")
+    state.task_type = "resume"
+    state.stage = "revise"
+    save_state(state)
+
+    raw_message = "请再精简一点"
+    llm_reply = "我会进一步精简内容。"
 
     async def fake_call_llm(prompt: str) -> str:
         assert raw_message in prompt
         return llm_reply
 
-    async def fail_if_called(_: str) -> dict:
-        raise AssertionError("detect_task_type should not be called after start stage")
+    async def fail_if_called(*_: object, **__: object) -> dict:
+        raise AssertionError("routing or extraction should not be called in revise stage")
 
     monkeypatch.setattr("app.main.call_llm", fake_call_llm)
     monkeypatch.setattr("app.main.detect_task_type", fail_if_called)
+    monkeypatch.setattr("app.main.extract_slots", fail_if_called)
 
     response = client.post(
         "/chat",
-        json={"session_id": "existing-session", "message": raw_message},
+        json={"session_id": "review-session", "message": raw_message},
     )
 
     body = response.json()
 
     assert response.status_code == 200
-    assert body["session_id"] == "existing-session"
     assert body["reply"] == llm_reply
-    assert body["debug"]["task_type"] == "resume"
-    assert body["debug"]["stage"] == "collect_info"
-    assert body["debug"]["task_router_result"] is None
-    assert body["debug"]["task_template_loaded"] is True
-    assert body["debug"]["required_slots"] == [
-        "target_position",
-        "education",
-        "work_experience",
-        "project_experience",
-    ]
-    assert body["debug"]["history_count"] == 2
+    assert body["debug"]["stage"] == "revise"
