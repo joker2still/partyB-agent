@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.draft_generator import generate_resume_draft
 from app.agents.slot_checker import check_missing_slots
 from app.agents.slot_extractor import extract_slots
 from app.agents.task_router import detect_task_type
@@ -49,6 +50,18 @@ def _match_style_option(message: str, style_options: list[dict]) -> dict | None:
     return None
 
 
+def _build_draft_reply(style_label: str, draft: str) -> str:
+    return (
+        "\u597d\u7684\uff0c\u6211\u4f1a\u6309\u300c"
+        f"{style_label}"
+        "\u300d\u98ce\u683c\u751f\u6210\u3002\u4e0b\u9762\u662f\u7b2c\u4e00\u7248\u7b80\u5386\u521d\u7a3f\uff1a\n\n"
+        f"{draft}\n\n"
+        "\u4f60\u53ef\u4ee5\u544a\u8bc9\u6211\u54ea\u91cc\u9700\u8981\u4fee\u6539\uff0c"
+        "\u6bd4\u5982\uff1a\u66f4\u7a81\u51fa\u9879\u76ee\u3001\u538b\u7f29\u5de5\u4f5c\u7ecf\u5386\u3001"
+        "\u589e\u52a0\u6280\u80fd\u6808\u3001\u8c03\u6574\u8bed\u6c14\u7b49\u3002"
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -70,6 +83,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     slots_after = dict(state.slots)
     options: list[dict] = []
     selected_style = ""
+    draft_generated = False
+    draft_length = 0
 
     if state.stage == "start":
         task_router_result = await detect_task_type(payload.message)
@@ -161,18 +176,44 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             state.slots["style"] = selected_style
             state.stage = "draft"
             slots_after = dict(state.slots)
-            reply = (
-                "\u597d\u7684\uff0c\u6211\u4f1a\u6309\u300c"
-                f"{matched_style_option.get('label', '')}"
-                "\u300d\u98ce\u683c\u6765\u751f\u6210\u7b80\u5386\u3002"
-                "\u4e0b\u4e00\u6b65\u6211\u5c06\u5148\u751f\u6210\u7b80\u5386\u521d\u7a3f\u3002"
-            )
+
+            draft_result = await generate_resume_draft(state.slots, template)
+            draft = draft_result.get("draft", "")
+            state.slots["resume_draft"] = draft
+            state.stage = "revise"
+            slots_after = dict(state.slots)
+            draft_generated = True
+            draft_length = len(draft)
             options = []
+            reply = _build_draft_reply(matched_style_option.get("label", ""), draft)
         else:
             reply = (
                 "\u6211\u9700\u8981\u5148\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff0c"
                 "\u4f60\u53ef\u4ee5\u9009\u62e9\u4e0b\u9762\u4e00\u79cd\uff1a"
             )
+    elif state.stage == "draft":
+        template = load_task_template(state.task_type or "")
+        task_template_loaded = bool(template)
+        required_slots = template.get("required_slots", []) if template else []
+
+        draft_result = await generate_resume_draft(state.slots, template)
+        draft = draft_result.get("draft", "")
+        state.slots["resume_draft"] = draft
+        state.stage = "revise"
+        slots_after = dict(state.slots)
+        draft_generated = True
+        draft_length = len(draft)
+
+        style_options = template.get("style_options", []) if template else []
+        style_label = next(
+            (
+                option.get("label", "")
+                for option in style_options
+                if option.get("value") == state.slots.get("style")
+            ),
+            "\u9ed8\u8ba4",
+        )
+        reply = _build_draft_reply(style_label, draft)
     else:
         if state.task_type:
             template = load_task_template(state.task_type)
@@ -217,6 +258,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             "required_slots": required_slots,
             "options_count": len(options),
             "selected_style": selected_style,
+            "draft_generated": draft_generated,
+            "draft_length": draft_length,
         },
         options=options,
     )

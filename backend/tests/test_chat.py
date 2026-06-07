@@ -184,13 +184,23 @@ def test_chat_confirm_style_returns_options_when_message_not_matched() -> None:
     assert "我需要先确认简历风格" in body["reply"]
 
 
-def test_chat_confirm_style_accepts_label_and_enters_draft() -> None:
+def test_chat_confirm_style_accepts_label_generates_draft_and_enters_revise(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
     state = get_or_create_state("style-picked-session")
     state.task_type = "resume"
     state.stage = "confirm_style"
     save_state(state)
+
+    async def fake_generate_resume_draft(slots: dict, task_template: dict) -> dict:
+        assert slots["style"] == "technical_strong"
+        assert task_template["task_type"] == "resume"
+        return {
+            "draft": "# 简历初稿\n\n## 项目经历\n- Agentic RAG 项目",
+            "reason": "generated",
+        }
+
+    monkeypatch.setattr("app.main.generate_resume_draft", fake_generate_resume_draft)
 
     response = client.post(
         "/chat",
@@ -200,12 +210,49 @@ def test_chat_confirm_style_accepts_label_and_enters_draft() -> None:
     body = response.json()
 
     assert response.status_code == 200
-    assert body["debug"]["stage"] == "draft"
+    assert body["debug"]["stage"] == "revise"
     assert body["debug"]["selected_style"] == "technical_strong"
     assert body["debug"]["slots"]["style"] == "technical_strong"
+    assert body["debug"]["slots"]["resume_draft"].startswith("# 简历初稿")
+    assert body["debug"]["draft_generated"] is True
+    assert body["debug"]["draft_length"] > 0
     assert body["debug"]["options_count"] == 0
     assert body["options"] == []
-    assert "技术硬核" in body["reply"]
+    assert "下面是第一版简历初稿" in body["reply"]
+
+
+def test_chat_generates_draft_when_stage_is_draft(monkeypatch) -> None:
+    state_store._STATE_STORE.clear()
+
+    state = get_or_create_state("draft-session")
+    state.task_type = "resume"
+    state.stage = "draft"
+    state.slots["style"] = "simple_professional"
+    save_state(state)
+
+    async def fake_generate_resume_draft(slots: dict, task_template: dict) -> dict:
+        assert slots["style"] == "simple_professional"
+        assert task_template["task_type"] == "resume"
+        return {
+            "draft": "# 简历初稿\n\n## 教育经历\n- 待补充",
+            "reason": "generated",
+        }
+
+    monkeypatch.setattr("app.main.generate_resume_draft", fake_generate_resume_draft)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": "draft-session", "message": "继续生成"},
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["debug"]["stage"] == "revise"
+    assert body["debug"]["draft_generated"] is True
+    assert body["debug"]["draft_length"] > 0
+    assert body["debug"]["slots"]["resume_draft"].startswith("# 简历初稿")
+    assert "下面是第一版简历初稿" in body["reply"]
 
 
 def test_chat_uses_normal_llm_reply_after_collect_info(monkeypatch) -> None:
@@ -224,11 +271,12 @@ def test_chat_uses_normal_llm_reply_after_collect_info(monkeypatch) -> None:
         return llm_reply
 
     async def fail_if_called(*_: object, **__: object) -> dict:
-        raise AssertionError("routing or extraction should not be called in revise stage")
+        raise AssertionError("routing, extraction or draft generation should not be called in revise stage")
 
     monkeypatch.setattr("app.main.call_llm", fake_call_llm)
     monkeypatch.setattr("app.main.detect_task_type", fail_if_called)
     monkeypatch.setattr("app.main.extract_slots", fail_if_called)
+    monkeypatch.setattr("app.main.generate_resume_draft", fail_if_called)
 
     response = client.post(
         "/chat",
