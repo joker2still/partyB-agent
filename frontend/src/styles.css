@@ -60,6 +60,20 @@ input {
   gap: 12px;
 }
 
+.message-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-group.user {
+  align-items: flex-end;
+}
+
+.message-group.assistant {
+  align-items: flex-start;
+}
+
 .message {
   max-width: 85%;
   padding: 12px 14px;
@@ -69,13 +83,32 @@ input {
 }
 
 .message.user {
-  align-self: flex-end;
   background: #dbeafe;
 }
 
 .message.assistant {
-  align-self: flex-start;
   background: #e5e7eb;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 85%;
+}
+
+.option-button {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #111827;
+  cursor: pointer;
+}
+
+.option-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .chat-form {

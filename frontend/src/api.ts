@@ -1,12 +1,19 @@
-type ChatRequest = {
+export type ChatRequest = {
   session_id: string | null;
   message: string;
 };
 
-type ChatResponse = {
+export type ChatOption = {
+  label: string;
+  value: string;
+  description: string;
+};
+
+export type ChatResponse = {
   session_id: string;
   reply: string;
   debug: Record<string, unknown>;
+  options: ChatOption[];
 };
 
 const API_URL = "http://127.0.0.1:8000/chat";

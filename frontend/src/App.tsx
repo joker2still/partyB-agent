@@ -1,10 +1,11 @@
 import { FormEvent, useState } from "react";
 
-import { sendChatMessage } from "./api";
+import { ChatOption, sendChatMessage } from "./api";
 
 type Message = {
   role: "user" | "assistant";
   content: string;
+  options?: ChatOption[];
 };
 
 function App() {
@@ -13,10 +14,8 @@ function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const trimmed = input.trim();
+  const submitMessage = async (rawMessage: string) => {
+    const trimmed = rawMessage.trim();
     if (!trimmed || isLoading) {
       return;
     }
@@ -34,19 +33,33 @@ function App() {
       setSessionId(response.session_id);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: response.reply },
+        {
+          role: "assistant",
+          content: response.reply,
+          options: response.options,
+        },
       ]);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "请求失败，请检查后端是否启动。";
+        error instanceof Error
+          ? error.message
+          : "请求失败，请检查后端是否启动。";
 
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `请求失败：${message}` },
+        {
+          role: "assistant",
+          content: `请求失败：${message}`,
+        },
       ]);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await submitMessage(input);
   };
 
   return (
@@ -64,8 +77,24 @@ function App() {
             </div>
           ) : (
             messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
-                {message.content}
+              <div key={`${message.role}-${index}`} className={`message-group ${message.role}`}>
+                <div className={`message ${message.role}`}>{message.content}</div>
+                {message.role === "assistant" && message.options && message.options.length > 0 ? (
+                  <div className="options">
+                    {message.options.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className="option-button"
+                        disabled={isLoading}
+                        onClick={() => void submitMessage(option.label)}
+                        title={option.description}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ))
           )}

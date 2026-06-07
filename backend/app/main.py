@@ -24,6 +24,31 @@ app.add_middleware(
 )
 
 
+def _build_question_lines(slot_names: list[str], slot_questions: dict) -> list[str]:
+    question_lines: list[str] = []
+    for index, slot_name in enumerate(slot_names, start=1):
+        question = slot_questions.get(slot_name)
+        if isinstance(question, str) and question.strip():
+            question_lines.append(f"{index}. {question}")
+    return question_lines
+
+
+def _normalize_text(text: str) -> str:
+    return text.strip().casefold()
+
+
+def _match_style_option(message: str, style_options: list[dict]) -> dict | None:
+    normalized_message = _normalize_text(message)
+    for option in style_options:
+        label = option.get("label")
+        value = option.get("value")
+        if isinstance(label, str) and _normalize_text(label) == normalized_message:
+            return option
+        if isinstance(value, str) and _normalize_text(value) == normalized_message:
+            return option
+    return None
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -33,6 +58,7 @@ def health() -> dict[str, str]:
 async def chat(payload: ChatRequest) -> ChatResponse:
     state = get_or_create_state(payload.session_id)
     append_message(state, "user", payload.message)
+
     task_router_result: dict | None = None
     task_template_loaded = False
     required_slots: list[str] = []
@@ -42,6 +68,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     slot_extractor_parse_success = False
     slots_before = dict(state.slots)
     slots_after = dict(state.slots)
+    options: list[dict] = []
+    selected_style = ""
 
     if state.stage == "start":
         task_router_result = await detect_task_type(payload.message)
@@ -54,12 +82,7 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             required_slots = template.get("required_slots", []) if template else []
 
             slot_questions = template.get("slot_questions", {}) if template else {}
-            first_round_slots = required_slots[:3]
-            question_lines = []
-            for index, slot_name in enumerate(first_round_slots, start=1):
-                question = slot_questions.get(slot_name)
-                if isinstance(question, str) and question.strip():
-                    question_lines.append(f"{index}. {question}")
+            question_lines = _build_question_lines(required_slots[:3], slot_questions)
 
             if question_lines:
                 reply = (
@@ -103,12 +126,7 @@ async def chat(payload: ChatRequest) -> ChatResponse:
 
         if state.missing_slots:
             slot_questions = template.get("slot_questions", {}) if template else {}
-            follow_up_slots = state.missing_slots[:2]
-            question_lines = []
-            for index, slot_name in enumerate(follow_up_slots, start=1):
-                question = slot_questions.get(slot_name)
-                if isinstance(question, str) and question.strip():
-                    question_lines.append(f"{index}. {question}")
+            question_lines = _build_question_lines(state.missing_slots[:2], slot_questions)
 
             if question_lines:
                 reply = (
@@ -125,11 +143,35 @@ async def chat(payload: ChatRequest) -> ChatResponse:
                 )
         else:
             state.stage = "confirm_style"
+            options = template.get("style_options", []) if template else []
             reply = (
                 "\u57fa\u7840\u4fe1\u606f\u5df2\u7ecf\u591f\u4e86\u3002"
-                "\u63a5\u4e0b\u6765\u6211\u60f3\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff1a"
-                "\u4f60\u5e0c\u671b\u504f \u7b80\u6d01\u4e13\u4e1a\u3001\u6280\u672f\u786c\u6838\u3001"
-                "\u8bbe\u8ba1\u611f\u5f3a\uff0c\u8fd8\u662f\u9002\u5408\u5e94\u5c4a\u751f\uff1f"
+                "\u63a5\u4e0b\u6765\u8bf7\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff0c"
+                "\u4f60\u53ef\u4ee5\u9009\u62e9\u4e0b\u9762\u4e00\u79cd\uff1a"
+            )
+    elif state.stage == "confirm_style":
+        template = load_task_template(state.task_type or "")
+        task_template_loaded = bool(template)
+        required_slots = template.get("required_slots", []) if template else []
+        options = template.get("style_options", []) if template else []
+
+        matched_style_option = _match_style_option(payload.message, options)
+        if matched_style_option:
+            selected_style = matched_style_option.get("value", "")
+            state.slots["style"] = selected_style
+            state.stage = "draft"
+            slots_after = dict(state.slots)
+            reply = (
+                "\u597d\u7684\uff0c\u6211\u4f1a\u6309\u300c"
+                f"{matched_style_option.get('label', '')}"
+                "\u300d\u98ce\u683c\u6765\u751f\u6210\u7b80\u5386\u3002"
+                "\u4e0b\u4e00\u6b65\u6211\u5c06\u5148\u751f\u6210\u7b80\u5386\u521d\u7a3f\u3002"
+            )
+            options = []
+        else:
+            reply = (
+                "\u6211\u9700\u8981\u5148\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff0c"
+                "\u4f60\u53ef\u4ee5\u9009\u62e9\u4e0b\u9762\u4e00\u79cd\uff1a"
             )
     else:
         if state.task_type:
@@ -173,5 +215,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             "task_router_result": task_router_result,
             "task_template_loaded": task_template_loaded,
             "required_slots": required_slots,
+            "options_count": len(options),
+            "selected_style": selected_style,
         },
+        options=options,
     )

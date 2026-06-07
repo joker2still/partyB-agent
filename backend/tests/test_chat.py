@@ -88,7 +88,7 @@ def test_chat_routes_resume_request(monkeypatch) -> None:
     assert "请告诉我你的工作经历" in body["reply"]
 
 
-def test_chat_collect_info_uses_extracted_slots_and_enters_confirm_style(monkeypatch) -> None:
+def test_chat_collect_info_uses_extracted_slots_and_returns_style_options(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
     state = get_or_create_state("resume-session")
@@ -97,7 +97,6 @@ def test_chat_collect_info_uses_extracted_slots_and_enters_confirm_style(monkeyp
     save_state(state)
 
     raw_output = """
-这里是结果：
 ```json
 {
   "updated_slots": {
@@ -156,53 +155,57 @@ def test_chat_collect_info_uses_extracted_slots_and_enters_confirm_style(monkeyp
     assert body["debug"]["extracted_slots"] == body["debug"]["slots_after"]
     assert body["debug"]["missing_slots"] == []
     assert body["debug"]["stage"] == "confirm_style"
-    assert "简历风格" in body["reply"]
+    assert body["debug"]["options_count"] == 4
+    assert len(body["options"]) == 4
+    assert body["options"][0]["label"] == "简洁专业"
+    assert "请确认简历风格" in body["reply"]
 
 
-def test_chat_collect_info_falls_back_to_rules_when_parse_fails(monkeypatch) -> None:
+def test_chat_confirm_style_returns_options_when_message_not_matched() -> None:
     state_store._STATE_STORE.clear()
 
-    state = get_or_create_state("fallback-session")
+    state = get_or_create_state("style-session")
     state.task_type = "resume"
-    state.stage = "collect_info"
+    state.stage = "confirm_style"
     save_state(state)
-
-    async def fake_extract_slots(message: str, task_template: dict, current_slots: dict) -> dict:
-        assert "工作经历暂时先不写" in message
-        return {
-            "updated_slots": {
-                "target_position": "AI Agent 开发岗位",
-                "education": "浙江工商大学大数据专业本科，2023年毕业",
-                "work_experience": "暂无",
-                "project_experience": "Agentic RAG 本地知识库项目，技术栈 FastAPI、React、Ollama、Qdrant",
-            },
-            "reason": "LLM 返回无法解析为 JSON，已使用规则兜底",
-            "raw_llm_output": "not json",
-            "parse_success": False,
-        }
-
-    monkeypatch.setattr("app.main.extract_slots", fake_extract_slots)
 
     response = client.post(
         "/chat",
-        json={
-            "session_id": "fallback-session",
-            "message": (
-                "我想投 AI Agent 开发岗位，本科是浙江工商大学大数据专业，2023年毕业。"
-                "我有一个 Agentic RAG 本地知识库项目，用 FastAPI、React、Ollama、Qdrant 做的。"
-                "工作经历暂时先不写。"
-            ),
-        },
+        json={"session_id": "style-session", "message": "你帮我决定"},
     )
 
     body = response.json()
 
     assert response.status_code == 200
-    assert body["debug"]["slot_extractor_called"] is True
-    assert body["debug"]["slot_extractor_parse_success"] is False
-    assert body["debug"]["slot_extractor_raw_output"] == "not json"
-    assert body["debug"]["missing_slots"] == []
     assert body["debug"]["stage"] == "confirm_style"
+    assert body["debug"]["options_count"] == 4
+    assert body["debug"]["selected_style"] == ""
+    assert len(body["options"]) == 4
+    assert "我需要先确认简历风格" in body["reply"]
+
+
+def test_chat_confirm_style_accepts_label_and_enters_draft() -> None:
+    state_store._STATE_STORE.clear()
+
+    state = get_or_create_state("style-picked-session")
+    state.task_type = "resume"
+    state.stage = "confirm_style"
+    save_state(state)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": "style-picked-session", "message": "技术硬核"},
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["debug"]["stage"] == "draft"
+    assert body["debug"]["selected_style"] == "technical_strong"
+    assert body["debug"]["slots"]["style"] == "technical_strong"
+    assert body["debug"]["options_count"] == 0
+    assert body["options"] == []
+    assert "技术硬核" in body["reply"]
 
 
 def test_chat_uses_normal_llm_reply_after_collect_info(monkeypatch) -> None:

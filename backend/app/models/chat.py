@@ -12,3 +12,4 @@ class ChatResponse(BaseModel):
     session_id: str
     reply: str
     debug: dict[str, Any]
+    options: list[dict[str, Any]] = Field(default_factory=list)
