@@ -255,36 +255,60 @@ def test_chat_generates_draft_when_stage_is_draft(monkeypatch) -> None:
     assert "下面是第一版简历初稿" in body["reply"]
 
 
-def test_chat_uses_normal_llm_reply_after_collect_info(monkeypatch) -> None:
+def test_chat_revises_resume_draft(monkeypatch) -> None:
     state_store._STATE_STORE.clear()
 
-    state = get_or_create_state("review-session")
+    state = get_or_create_state("revise-session")
     state.task_type = "resume"
     state.stage = "revise"
+    state.slots["resume_draft"] = "# 简历初稿\n\n## 项目经历\n- 原始版本"
     save_state(state)
 
-    raw_message = "请再精简一点"
-    llm_reply = "我会进一步精简内容。"
+    async def fake_revise_resume_draft(current_draft: str, user_feedback: str, slots: dict) -> dict:
+        assert current_draft.startswith("# 简历初稿")
+        assert user_feedback == "更突出项目"
+        assert slots["resume_draft"].startswith("# 简历初稿")
+        return {
+            "revised_draft": "# 简历初稿\n\n## 项目经历\n- 强化后的项目亮点",
+            "reason": "revised",
+        }
 
-    async def fake_call_llm(prompt: str) -> str:
-        assert raw_message in prompt
-        return llm_reply
-
-    async def fail_if_called(*_: object, **__: object) -> dict:
-        raise AssertionError("routing, extraction or draft generation should not be called in revise stage")
-
-    monkeypatch.setattr("app.main.call_llm", fake_call_llm)
-    monkeypatch.setattr("app.main.detect_task_type", fail_if_called)
-    monkeypatch.setattr("app.main.extract_slots", fail_if_called)
-    monkeypatch.setattr("app.main.generate_resume_draft", fail_if_called)
+    monkeypatch.setattr("app.main.revise_resume_draft", fake_revise_resume_draft)
 
     response = client.post(
         "/chat",
-        json={"session_id": "review-session", "message": raw_message},
+        json={"session_id": "revise-session", "message": "更突出项目"},
     )
 
     body = response.json()
 
     assert response.status_code == 200
-    assert body["reply"] == llm_reply
+    assert body["debug"]["revise_called"] is True
+    assert body["debug"]["final_confirmed"] is False
     assert body["debug"]["stage"] == "revise"
+    assert body["debug"]["draft_length"] > 0
+    assert body["debug"]["slots"]["resume_draft"] == "# 简历初稿\n\n## 项目经历\n- 强化后的项目亮点"
+    assert "我已经根据你的意见修改了简历" in body["reply"]
+
+
+def test_chat_confirms_final_resume() -> None:
+    state_store._STATE_STORE.clear()
+
+    state = get_or_create_state("final-session")
+    state.task_type = "resume"
+    state.stage = "revise"
+    state.slots["resume_draft"] = "# 简历初稿"
+    save_state(state)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": "final-session", "message": "确认最终版"},
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["debug"]["stage"] == "final"
+    assert body["debug"]["final_confirmed"] is True
+    assert body["debug"]["revise_called"] is False
+    assert "当前简历已确认作为最终版" in body["reply"]

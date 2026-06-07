@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.draft_generator import generate_resume_draft
+from app.agents.resume_reviser import revise_resume_draft
 from app.agents.slot_checker import check_missing_slots
 from app.agents.slot_extractor import extract_slots
 from app.agents.task_router import detect_task_type
@@ -23,6 +24,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+FINAL_CONFIRM_WORDS = [
+    "\u786e\u8ba4\u6700\u7ec8\u7248",
+    "\u6700\u7ec8\u7248",
+    "\u53ef\u4ee5\u4e86",
+    "\u6ca1\u95ee\u9898",
+    "\u786e\u8ba4",
+]
 
 
 def _build_question_lines(slot_names: list[str], slot_questions: dict) -> list[str]:
@@ -85,6 +94,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     selected_style = ""
     draft_generated = False
     draft_length = 0
+    revise_called = False
+    final_confirmed = False
 
     if state.stage == "start":
         task_router_result = await detect_task_type(payload.message)
@@ -214,6 +225,32 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             "\u9ed8\u8ba4",
         )
         reply = _build_draft_reply(style_label, draft)
+    elif state.stage == "revise":
+        template = load_task_template(state.task_type or "")
+        task_template_loaded = bool(template)
+        required_slots = template.get("required_slots", []) if template else []
+
+        normalized_message = payload.message.strip()
+        if any(keyword in normalized_message for keyword in FINAL_CONFIRM_WORDS):
+            state.stage = "final"
+            final_confirmed = True
+            reply = (
+                "\u597d\u7684\uff0c\u5f53\u524d\u7b80\u5386\u5df2\u786e\u8ba4\u4f5c\u4e3a\u6700\u7ec8\u7248\u3002"
+                "\u4e0b\u4e00\u6b65\u53ef\u4ee5\u8fdb\u5165 Word \u7b80\u5386\u5bfc\u51fa\u529f\u80fd\u3002"
+            )
+        else:
+            current_draft = state.slots.get("resume_draft", "")
+            revise_result = await revise_resume_draft(current_draft, payload.message, state.slots)
+            revised_draft = revise_result.get("revised_draft", current_draft)
+            state.slots["resume_draft"] = revised_draft
+            slots_after = dict(state.slots)
+            revise_called = True
+            draft_length = len(revised_draft)
+            reply = (
+                "\u6211\u5df2\u7ecf\u6839\u636e\u4f60\u7684\u610f\u89c1\u4fee\u6539\u4e86\u7b80\u5386\uff0c\u4e0b\u9762\u662f\u65b0\u7248\uff1a\n\n"
+                f"{revised_draft}\n\n"
+                "\u4f60\u8fd8\u53ef\u4ee5\u7ee7\u7eed\u4fee\u6539\uff0c\u6216\u8005\u8f93\u5165\uff1a\u786e\u8ba4\u6700\u7ec8\u7248\u3002"
+            )
     else:
         if state.task_type:
             template = load_task_template(state.task_type)
@@ -260,6 +297,8 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             "selected_style": selected_style,
             "draft_generated": draft_generated,
             "draft_length": draft_length,
+            "revise_called": revise_called,
+            "final_confirmed": final_confirmed,
         },
         options=options,
     )
