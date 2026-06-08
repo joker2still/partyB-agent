@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.workflow_controller import handle_chat_turn
 from app.models.chat import ChatRequest, ChatResponse, ResumeExportRequest
-from app.services.docx_exporter import export_resume_docx
+from app.services.docx_exporter import export_structured_resume_docx
 from app.services.state_store import append_message, get_or_create_state, get_state, save_state
 
 
@@ -58,7 +58,7 @@ def export_resume(payload: ResumeExportRequest) -> FileResponse:
     if not isinstance(markdown_text, str) or not markdown_text.strip():
         raise HTTPException(status_code=400, detail="resume draft not found")
 
-    file_path = export_resume_docx(markdown_text, state.session_id)
+    file_path = export_structured_resume_docx(state.slots, state.session_id)
     filename = Path(file_path).name
     return FileResponse(
         path=file_path,
