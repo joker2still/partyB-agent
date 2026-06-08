@@ -1,3 +1,4 @@
+import re
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -15,13 +16,20 @@ from app.services.template_loader import load_task_template
 settings = get_settings()
 
 FINAL_CONFIRM_WORDS = [
-    "确认最终版",
-    "最终版",
-    "可以了",
-    "没问题",
-    "确认",
+    "\u786e\u8ba4\u6700\u7ec8\u7248",
+    "\u6700\u7ec8\u7248",
+    "\u53ef\u4ee5\u4e86",
+    "\u6ca1\u95ee\u9898",
+    "\u786e\u8ba4",
 ]
-
+EXPORT_REQUIRED_SLOTS = ["name", "phone", "email", "age", "location"]
+EXPORT_SLOT_LABELS = {
+    "name": "\u59d3\u540d",
+    "phone": "\u624b\u673a",
+    "email": "\u90ae\u7bb1",
+    "age": "\u5e74\u9f84",
+    "location": "\u73b0\u5c45\u5730",
+}
 KNOWN_STAGES = {
     "start",
     "collect_info",
@@ -30,6 +38,7 @@ KNOWN_STAGES = {
     "revise",
     "final",
     "clarify_task",
+    "collect_export_info",
 }
 
 
@@ -79,9 +88,13 @@ def _match_style_option(message: str, style_options: list[dict]) -> dict | None:
 
 def _build_draft_reply(style_label: str, draft: str) -> str:
     return (
-        f"好的，我会按「{style_label}」风格生成。下面是第一版简历初稿：\n\n"
+        "\u597d\u7684\uff0c\u6211\u4f1a\u6309\u300c"
+        f"{style_label}"
+        "\u300d\u98ce\u683c\u751f\u6210\u3002\u4e0b\u9762\u662f\u7b2c\u4e00\u7248\u7b80\u5386\u521d\u7a3f\uff1a\n\n"
         f"{draft}\n\n"
-        "你可以告诉我哪里需要修改，比如：更突出项目、压缩工作经历、增加技能栈、调整语气等。"
+        "\u4f60\u53ef\u4ee5\u544a\u8bc9\u6211\u54ea\u91cc\u9700\u8981\u4fee\u6539\uff0c"
+        "\u6bd4\u5982\uff1a\u66f4\u7a81\u51fa\u9879\u76ee\u3001\u538b\u7f29\u5de5\u4f5c\u7ecf\u5386\u3001"
+        "\u589e\u52a0\u6280\u80fd\u6808\u3001\u8c03\u6574\u8bed\u6c14\u7b49\u3002"
     )
 
 
@@ -121,6 +134,8 @@ def _build_base_debug(state: AgentState, user_message: str) -> dict[str, Any]:
         "langgraph_real_workflow": True,
         "langgraph_preview": {},
         "invalid_stage": False,
+        "export_info_missing": [],
+        "export_info_collected": False,
     }
 
 
@@ -142,6 +157,66 @@ def _finalize_debug(graph_state: GraphState) -> GraphState:
     return graph_state
 
 
+def _check_missing_export_info(slots: dict) -> list[str]:
+    missing: list[str] = []
+    for key in EXPORT_REQUIRED_SLOTS:
+        value = slots.get(key, "")
+        if not isinstance(value, str) or not value.strip():
+            missing.append(key)
+    return missing
+
+
+def _missing_export_info_labels(slot_names: list[str]) -> str:
+    return "\u3001".join(EXPORT_SLOT_LABELS.get(slot_name, slot_name) for slot_name in slot_names)
+
+
+def _extract_export_info(message: str, current_slots: dict) -> dict[str, str]:
+    updated = dict(current_slots)
+
+    name_match = re.search(r"(?:\u6211\u53eb|\u59d3\u540d(?:\u662f)?[:\uff1a]?|\u540d\u5b57(?:\u662f)?[:\uff1a]?)([\u4e00-\u9fffA-Za-z\u00b7]{2,20})", message)
+    if name_match:
+        updated["name"] = name_match.group(1).strip()
+
+    phone_patterns = [
+        r"(?:\u624b\u673a(?:\u53f7)?[:\uff1a]?\s*)(1\d{10})",
+        r"(?:\u7535\u8bdd[:\uff1a]?\s*)(1\d{10})",
+        r"(1\d{10})",
+    ]
+    for pattern in phone_patterns:
+        phone_match = re.search(pattern, message)
+        if phone_match:
+            updated["phone"] = phone_match.group(1)
+            break
+
+    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", message)
+    if email_match:
+        updated["email"] = email_match.group(1)
+
+    age_patterns = [
+        r"(?:\u5e74\u9f84(?:\u662f)?[:\uff1a]?\s*)(\d{1,2})(?:\u5c81)?",
+        r"(?:\u4eca\u5e74\s*)(\d{1,2})\u5c81",
+        r"(\d{1,2})\u5c81",
+    ]
+    for pattern in age_patterns:
+        age_match = re.search(pattern, message)
+        if age_match:
+            updated["age"] = age_match.group(1)
+            break
+
+    location_patterns = [
+        r"(?:\u73b0\u5c45(?:\u5730)?[:\uff1a]?)([^\uff0c\u3002\uff1b\n]{2,20})",
+        r"(?:\u5c45\u4f4f\u5728)([^\uff0c\u3002\uff1b\n]{2,20})",
+        r"(?:\u6240\u5728\u5730[:\uff1a]?)([^\uff0c\u3002\uff1b\n]{2,20})",
+    ]
+    for pattern in location_patterns:
+        location_match = re.search(pattern, message)
+        if location_match:
+            updated["location"] = location_match.group(1).strip()
+            break
+
+    return updated
+
+
 def route_stage_node(graph_state: GraphState) -> GraphState:
     agent_state = graph_state["state"]
     stage = agent_state.stage
@@ -161,7 +236,7 @@ async def start_node(graph_state: GraphState) -> GraphState:
 
     if debug.get("invalid_stage"):
         agent_state.stage = "start"
-        graph_state["reply"] = "当前流程状态异常，我会重新回到需求确认阶段。"
+        graph_state["reply"] = "\u5f53\u524d\u6d41\u7a0b\u72b6\u6001\u5f02\u5e38\uff0c\u6211\u4f1a\u91cd\u65b0\u56de\u5230\u9700\u6c42\u786e\u8ba4\u9636\u6bb5\u3002"
         graph_state["workflow_action"] = "clarify_task"
         return _finalize_debug(graph_state)
 
@@ -180,23 +255,27 @@ async def start_node(graph_state: GraphState) -> GraphState:
 
         if question_lines:
             graph_state["reply"] = (
-                "好的，我理解你想写简历。为了先搭好简历骨架，我需要了解下面几项：\n\n"
+                "\u597d\u7684\uff0c\u6211\u7406\u89e3\u4f60\u60f3\u5199\u7b80\u5386\u3002"
+                "\u4e3a\u4e86\u5148\u642d\u597d\u7b80\u5386\u9aa8\u67b6\uff0c"
+                "\u6211\u9700\u8981\u4e86\u89e3\u4e0b\u9762\u51e0\u9879\uff1a\n\n"
                 + "\n".join(question_lines)
                 + "\n\n"
-                + "你可以一次性回答，也可以先回答其中一部分。"
+                + "\u4f60\u53ef\u4ee5\u4e00\u6b21\u6027\u56de\u7b54\uff0c\u4e5f\u53ef\u4ee5\u5148\u56de\u7b54\u5176\u4e2d\u4e00\u90e8\u5206\u3002"
             )
         else:
             graph_state["reply"] = (
-                "好的，我理解你想写简历。接下来我会先收集你的基础信息，"
-                "你可以先告诉我求职方向、教育经历和工作/项目经历。"
+                "\u597d\u7684\uff0c\u6211\u7406\u89e3\u4f60\u60f3\u5199\u7b80\u5386\u3002"
+                "\u63a5\u4e0b\u6765\u6211\u4f1a\u5148\u6536\u96c6\u4f60\u7684\u57fa\u672c\u4fe1\u606f\uff0c"
+                "\u4f60\u53ef\u4ee5\u5148\u544a\u8bc9\u6211\u6c42\u804c\u65b9\u5411\u3001\u6559\u80b2\u7ecf\u5386\u548c\u5de5\u4f5c/\u9879\u76ee\u7ecf\u5386\u3002"
             )
         graph_state["workflow_action"] = "detect_task"
     else:
         agent_state.task_type = "unknown"
         agent_state.stage = "clarify_task"
         graph_state["reply"] = (
-            "我还不确定你想完成哪类任务。你可以简单说一下你想让我帮你产出什么，"
-            "比如简历、PPT、方案、文案或代码项目。"
+            "\u6211\u8fd8\u4e0d\u786e\u5b9a\u4f60\u60f3\u5b8c\u6210\u54ea\u7c7b\u4efb\u52a1\u3002"
+            "\u4f60\u53ef\u4ee5\u7b80\u5355\u8bf4\u4e00\u4e0b\u4f60\u60f3\u8ba9\u6211\u5e2e\u4f60\u4ea7\u51fa\u4ec0\u4e48\uff0c"
+            "\u6bd4\u5982\u7b80\u5386\u3001PPT\u3001\u65b9\u6848\u3001\u6587\u6848\u6216\u4ee3\u7801\u9879\u76ee\u3002"
         )
         graph_state["workflow_action"] = "clarify_task"
 
@@ -229,20 +308,20 @@ async def collect_info_node(graph_state: GraphState) -> GraphState:
     if agent_state.missing_slots:
         slot_questions = template.get("slot_questions", {}) if template else {}
         question_lines = _build_question_lines(agent_state.missing_slots[:2], slot_questions)
-
         if question_lines:
             graph_state["reply"] = (
-                "我已经记录了你刚才提供的信息。现在还缺少下面几项：\n\n"
+                "\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u3002"
+                "\u73b0\u5728\u8fd8\u7f3a\u5c11\u4e0b\u9762\u51e0\u9879\uff1a\n\n"
                 + "\n".join(question_lines)
                 + "\n\n"
-                + "你可以继续补充。"
+                + "\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u3002"
             )
         else:
-            graph_state["reply"] = "我已经记录了你刚才提供的信息。还有些必填项未补全，你可以继续补充。"
+            graph_state["reply"] = "\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u3002\u8fd8\u6709\u4e9b\u5fc5\u586b\u9879\u672a\u8865\u5168\uff0c\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u3002"
     else:
         agent_state.stage = "confirm_style"
         graph_state["options"] = template.get("style_options", []) if template else []
-        graph_state["reply"] = "基础信息已经够了。接下来请确认简历风格，你可以选择下面一种："
+        graph_state["reply"] = "\u57fa\u7840\u4fe1\u606f\u5df2\u7ecf\u591f\u4e86\u3002\u63a5\u4e0b\u6765\u8bf7\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff0c\u4f60\u53ef\u4ee5\u9009\u62e9\u4e0b\u9762\u4e00\u79cd\uff1a"
 
     graph_state["workflow_action"] = "collect_slots"
     return _finalize_debug(graph_state)
@@ -277,7 +356,7 @@ async def confirm_style_node(graph_state: GraphState) -> GraphState:
         graph_state["reply"] = _build_draft_reply(matched_style_option.get("label", ""), draft)
         graph_state["workflow_action"] = "generate_draft"
     else:
-        graph_state["reply"] = "我需要先确认简历风格，你可以选择下面一种："
+        graph_state["reply"] = "\u6211\u9700\u8981\u5148\u786e\u8ba4\u7b80\u5386\u98ce\u683c\uff0c\u4f60\u53ef\u4ee5\u9009\u62e9\u4e0b\u9762\u4e00\u79cd\uff1a"
         graph_state["workflow_action"] = "confirm_style"
 
     return _finalize_debug(graph_state)
@@ -306,7 +385,7 @@ async def draft_node(graph_state: GraphState) -> GraphState:
             for option in style_options
             if option.get("value") == agent_state.slots.get("style")
         ),
-        "默认",
+        "\u9ed8\u8ba4",
     )
     graph_state["reply"] = _build_draft_reply(style_label, draft)
     graph_state["workflow_action"] = "generate_draft"
@@ -323,9 +402,25 @@ async def revise_node(graph_state: GraphState) -> GraphState:
     debug["required_slots"] = template.get("required_slots", []) if template else []
 
     if any(keyword in message.strip() for keyword in FINAL_CONFIRM_WORDS):
-        agent_state.stage = "final"
+        missing_export_info = _check_missing_export_info(agent_state.slots)
         debug["final_confirmed"] = True
-        graph_state["reply"] = "好的，当前简历已确认作为最终版。下一步可以进入 Word 简历导出功能。"
+        debug["export_info_missing"] = list(missing_export_info)
+
+        if missing_export_info:
+            agent_state.stage = "collect_export_info"
+            graph_state["reply"] = (
+                "\u7b80\u5386\u5185\u5bb9\u5df2\u786e\u8ba4\u3002"
+                "\u4e3a\u4e86\u751f\u6210\u5b8c\u6574 Word \u7b80\u5386\uff0c"
+                "\u8fd8\u9700\u8981\u8865\u5145\u4e0b\u9762\u8fd9\u4e9b\u4e2a\u4eba\u4fe1\u606f\uff1a"
+                f"{_missing_export_info_labels(missing_export_info)}\u3002"
+                "\u4f60\u53ef\u4ee5\u4e00\u6b21\u6027\u544a\u8bc9\u6211\u3002"
+            )
+            graph_state["workflow_action"] = "collect_export_info"
+            return _finalize_debug(graph_state)
+
+        agent_state.stage = "final"
+        debug["export_info_collected"] = True
+        graph_state["reply"] = "\u597d\u7684\uff0c\u5f53\u524d\u7b80\u5386\u5df2\u786e\u8ba4\u4f5c\u4e3a\u6700\u7ec8\u7248\uff0c\u73b0\u5728\u53ef\u4ee5\u5bfc\u51fa Word \u7b80\u5386\u3002"
         graph_state["workflow_action"] = "final_confirmed"
         return _finalize_debug(graph_state)
 
@@ -337,24 +432,54 @@ async def revise_node(graph_state: GraphState) -> GraphState:
     debug["revise_called"] = True
     debug["draft_length"] = len(revised_draft)
     graph_state["reply"] = (
-        "我已经根据你的意见修改了简历，下面是新版：\n\n"
+        "\u6211\u5df2\u7ecf\u6839\u636e\u4f60\u7684\u610f\u89c1\u4fee\u6539\u4e86\u7b80\u5386\uff0c\u4e0b\u9762\u662f\u65b0\u7248\uff1a\n\n"
         f"{revised_draft}\n\n"
-        "你还可以继续修改，或者输入：确认最终版。"
+        "\u4f60\u8fd8\u53ef\u4ee5\u7ee7\u7eed\u4fee\u6539\uff0c\u6216\u8005\u8f93\u5165\uff1a\u786e\u8ba4\u6700\u7ec8\u7248\u3002"
     )
     graph_state["workflow_action"] = "revise_draft"
     return _finalize_debug(graph_state)
 
 
+async def collect_export_info_node(graph_state: GraphState) -> GraphState:
+    agent_state = graph_state["state"]
+    message = graph_state["message"]
+    debug = graph_state["debug"]
+
+    agent_state.slots = _extract_export_info(message, agent_state.slots)
+    debug["slots_after"] = dict(agent_state.slots)
+    missing_export_info = _check_missing_export_info(agent_state.slots)
+    debug["export_info_missing"] = list(missing_export_info)
+
+    if missing_export_info:
+        graph_state["reply"] = (
+            "\u8fd8\u6709\u4ee5\u4e0b\u4e2a\u4eba\u4fe1\u606f\u672a\u8865\u5145\u5b8c\u6574\uff1a"
+            f"{_missing_export_info_labels(missing_export_info)}\u3002"
+            "\u8bf7\u7ee7\u7eed\u8865\u5145\u3002"
+        )
+        graph_state["workflow_action"] = "collect_export_info"
+    else:
+        agent_state.stage = "final"
+        debug["export_info_collected"] = True
+        graph_state["reply"] = "\u4e2a\u4eba\u4fe1\u606f\u5df2\u8865\u5145\u5b8c\u6574\uff0c\u73b0\u5728\u53ef\u4ee5\u5bfc\u51fa Word \u7b80\u5386\u3002"
+        graph_state["workflow_action"] = "final_confirmed"
+
+    return _finalize_debug(graph_state)
+
+
 async def final_node(graph_state: GraphState) -> GraphState:
-    graph_state["reply"] = "好的，当前简历已确认作为最终版。下一步可以进入 Word 简历导出功能。"
+    debug = graph_state["debug"]
+    debug["export_info_collected"] = True
+    debug["export_info_missing"] = []
+    graph_state["reply"] = "\u597d\u7684\uff0c\u5f53\u524d\u7b80\u5386\u5df2\u786e\u8ba4\u4f5c\u4e3a\u6700\u7ec8\u7248\uff0c\u73b0\u5728\u53ef\u4ee5\u5bfc\u51fa Word \u7b80\u5386\u3002"
     graph_state["workflow_action"] = "final_idle"
     return _finalize_debug(graph_state)
 
 
 async def clarify_task_node(graph_state: GraphState) -> GraphState:
     graph_state["reply"] = (
-        "我还不确定你想完成哪类任务。你可以简单说一下你想让我帮你产出什么，"
-        "比如简历、PPT、方案、文案或代码项目。"
+        "\u6211\u8fd8\u4e0d\u786e\u5b9a\u4f60\u60f3\u5b8c\u6210\u54ea\u7c7b\u4efb\u52a1\u3002"
+        "\u4f60\u53ef\u4ee5\u7b80\u5355\u8bf4\u4e00\u4e0b\u4f60\u60f3\u8ba9\u6211\u5e2e\u4f60\u4ea7\u51fa\u4ec0\u4e48\uff0c"
+        "\u6bd4\u5982\u7b80\u5386\u3001PPT\u3001\u65b9\u6848\u3001\u6587\u6848\u6216\u4ee3\u7801\u9879\u76ee\u3002"
     )
     graph_state["workflow_action"] = "clarify_task"
     return _finalize_debug(graph_state)
@@ -369,6 +494,7 @@ def _route_stage(graph_state: GraphState) -> str:
         "revise": "revise_node",
         "final": "final_node",
         "clarify_task": "clarify_task_node",
+        "collect_export_info": "collect_export_info_node",
     }
     return route_map.get(graph_state.get("stage", "start"), "start_node")
 
@@ -383,6 +509,7 @@ def _build_real_graph():
     graph.add_node("revise_node", revise_node)
     graph.add_node("final_node", final_node)
     graph.add_node("clarify_task_node", clarify_task_node)
+    graph.add_node("collect_export_info_node", collect_export_info_node)
 
     graph.add_edge(START, "route_stage_node")
     graph.add_conditional_edges(
@@ -396,6 +523,7 @@ def _build_real_graph():
             "revise_node": "revise_node",
             "final_node": "final_node",
             "clarify_task_node": "clarify_task_node",
+            "collect_export_info_node": "collect_export_info_node",
         },
     )
 
@@ -406,6 +534,7 @@ def _build_real_graph():
     graph.add_edge("revise_node", END)
     graph.add_edge("final_node", END)
     graph.add_edge("clarify_task_node", END)
+    graph.add_edge("collect_export_info_node", END)
     return graph.compile()
 
 
@@ -441,6 +570,10 @@ def clarify_task_preview_node(preview_state: PreviewState) -> PreviewState:
     return {"workflow_action": "clarify_task"}
 
 
+def collect_export_info_preview_node(preview_state: PreviewState) -> PreviewState:
+    return {"workflow_action": "collect_export_info"}
+
+
 def _route_preview_stage(preview_state: PreviewState) -> str:
     route_map = {
         "start": "start_preview_node",
@@ -450,6 +583,7 @@ def _route_preview_stage(preview_state: PreviewState) -> str:
         "revise": "revise_preview_node",
         "final": "final_preview_node",
         "clarify_task": "clarify_task_preview_node",
+        "collect_export_info": "collect_export_info_preview_node",
     }
     return route_map.get(preview_state.get("stage", "start"), "start_preview_node")
 
@@ -464,6 +598,7 @@ def _build_preview_graph():
     graph.add_node("revise_preview_node", revise_preview_node)
     graph.add_node("final_preview_node", final_preview_node)
     graph.add_node("clarify_task_preview_node", clarify_task_preview_node)
+    graph.add_node("collect_export_info_preview_node", collect_export_info_preview_node)
 
     graph.add_edge(START, "route_stage_preview_node")
     graph.add_conditional_edges(
@@ -477,6 +612,7 @@ def _build_preview_graph():
             "revise_preview_node": "revise_preview_node",
             "final_preview_node": "final_preview_node",
             "clarify_task_preview_node": "clarify_task_preview_node",
+            "collect_export_info_preview_node": "collect_export_info_preview_node",
         },
     )
 
@@ -487,6 +623,7 @@ def _build_preview_graph():
     graph.add_edge("revise_preview_node", END)
     graph.add_edge("final_preview_node", END)
     graph.add_edge("clarify_task_preview_node", END)
+    graph.add_edge("collect_export_info_preview_node", END)
     return graph.compile()
 
 
