@@ -72,6 +72,16 @@ If the LLM call fails, `/chat` returns:
 LLM 调用失败，请检查模型服务或 API 配置。
 ```
 
+## LangChain Usage
+
+The current backend only uses LangChain for:
+
+- `PromptTemplate`
+- `JsonOutputParser`
+
+LangGraph is not in use yet. The workflow is still driven by the project's own
+state machine and workflow controller.
+
 ## Frontend
 
 1. Enter the frontend directory:

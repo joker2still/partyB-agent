@@ -1,6 +1,7 @@
 import json
 import re
 
+from app.services.langchain_utils import build_json_prompt, parse_json_output
 from app.services.llm_provider import call_llm
 
 
@@ -25,45 +26,11 @@ def _safe_slots(current_slots: dict) -> dict:
 
 
 def robust_json_parse(raw_text: str) -> dict | None:
-    if not isinstance(raw_text, str) or not raw_text.strip():
-        return None
-
-    text = raw_text.strip()
-
     try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        pass
-
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
-    if fenced_match:
-        try:
-            parsed = json.loads(fenced_match.group(1))
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            pass
-
-    start_index = text.find("{")
-    if start_index == -1:
+        parsed = parse_json_output(raw_text)
+    except Exception:
         return None
-
-    brace_depth = 0
-    for index in range(start_index, len(text)):
-        char = text[index]
-        if char == "{":
-            brace_depth += 1
-        elif char == "}":
-            brace_depth -= 1
-            if brace_depth == 0:
-                candidate = text[start_index : index + 1]
-                try:
-                    parsed = json.loads(candidate)
-                    return parsed if isinstance(parsed, dict) else None
-                except json.JSONDecodeError:
-                    return None
-
-    return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _extract_target_position(message: str) -> str | None:
@@ -192,33 +159,40 @@ async def extract_slots(message: str, task_template: dict, current_slots: dict) 
     optional_slots = task_template.get("optional_slots", []) if task_template else []
     allowed_slots = required_slots + optional_slots
 
-    prompt = (
-        "\u4f60\u662f\u4fe1\u606f\u62bd\u53d6\u5668\u3002\n"
-        "\u8bf7\u6839\u636e\u7528\u6237\u8f93\u5165\uff0c\u4ece\u4e2d\u62bd\u53d6\u7b80\u5386\u76f8\u5173\u5b57\u6bb5\u3002\n"
-        "\u53ea\u62bd\u53d6\u7528\u6237\u660e\u786e\u63d0\u5230\u7684\u4fe1\u606f\u3002\n"
-        "\u4e0d\u8981\u7f16\u9020\u3002\n"
-        "\u6ca1\u63d0\u5230\u7684\u5b57\u6bb5\u4e0d\u8981\u65b0\u589e\uff0c\u6216\u8005\u4fdd\u6301 current_slots \u539f\u503c\u3002\n"
-        "\u4fdd\u7559 current_slots \u4e2d\u5df2\u6709\u4fe1\u606f\u3002\n"
-        "\u65b0\u4fe1\u606f\u53ef\u4ee5\u8986\u76d6\u65e7\u4fe1\u606f\u3002\n"
-        "\u53ea\u8fd4\u56de JSON\uff0c\u4e0d\u8981 Markdown\uff0c\u4e0d\u8981\u89e3\u91ca\u3002\n\n"
-        f"\u53ef\u7528\u5b57\u6bb5\uff1a{json.dumps(allowed_slots, ensure_ascii=False)}\n"
-        f"current_slots: {json.dumps(safe_current_slots, ensure_ascii=False)}\n\n"
-        "\u8bf7\u4e25\u683c\u8fd4\u56de\u5982\u4e0b JSON\uff1a\n"
-        "{\n"
-        '  "updated_slots": {\n'
-        '    "target_position": "",\n'
-        '    "education": "",\n'
-        '    "work_experience": "",\n'
-        '    "project_experience": ""\n'
-        "  },\n"
-        '  "reason": ""\n'
-        "}\n\n"
-        "\u89c4\u5219\uff1a\n"
-        '- "\u6211\u60f3\u6295 AI Agent \u5f00\u53d1\u5c97\u4f4d" \u5e94\u62bd\u53d6\u4e3a target_position\n'
-        '- "\u672c\u79d1\u662f\u6d59\u6c5f\u5de5\u5546\u5927\u5b66\u5927\u6570\u636e\u4e13\u4e1a\uff0c2023\u5e74\u6bd5\u4e1a" \u5e94\u62bd\u53d6\u4e3a education\n'
-        '- "Agentic RAG \u672c\u5730\u77e5\u8bc6\u5e93\u9879\u76ee\uff0c\u7528 FastAPI\u3001React\u3001Ollama\u3001Qdrant \u505a\u7684" \u5e94\u62bd\u53d6\u4e3a project_experience\n'
-        '- "\u5de5\u4f5c\u7ecf\u5386\u6682\u65f6\u5148\u4e0d\u5199" \u5e94\u62bd\u53d6\u4e3a work_experience = "\u6682\u65e0"\n\n'
-        f"\u7528\u6237\u8f93\u5165\uff1a{message}"
+    prompt = build_json_prompt(
+        (
+            "\u4f60\u662f\u4fe1\u606f\u62bd\u53d6\u5668\u3002\n"
+            "\u8bf7\u6839\u636e\u7528\u6237\u8f93\u5165\uff0c\u4ece\u4e2d\u62bd\u53d6\u7b80\u5386\u76f8\u5173\u5b57\u6bb5\u3002\n"
+            "\u53ea\u62bd\u53d6\u7528\u6237\u660e\u786e\u63d0\u5230\u7684\u4fe1\u606f\u3002\n"
+            "\u4e0d\u8981\u7f16\u9020\u3002\n"
+            "\u6ca1\u63d0\u5230\u7684\u5b57\u6bb5\u4e0d\u8981\u65b0\u589e\uff0c\u6216\u8005\u4fdd\u6301 current_slots \u539f\u503c\u3002\n"
+            "\u4fdd\u7559 current_slots \u4e2d\u5df2\u6709\u4fe1\u606f\u3002\n"
+            "\u65b0\u4fe1\u606f\u53ef\u4ee5\u8986\u76d6\u65e7\u4fe1\u606f\u3002\n"
+            "\u53ea\u8fd4\u56de JSON\uff0c\u4e0d\u8981 Markdown\uff0c\u4e0d\u8981\u89e3\u91ca\u3002\n\n"
+            "\u53ef\u7528\u5b57\u6bb5\uff1a{allowed_slots}\n"
+            "current_slots: {current_slots}\n\n"
+            "\u8bf7\u4e25\u683c\u8fd4\u56de\u5982\u4e0b JSON\uff1a\n"
+            "{{\n"
+            '  "updated_slots": {{\n'
+            '    "target_position": "",\n'
+            '    "education": "",\n'
+            '    "work_experience": "",\n'
+            '    "project_experience": ""\n'
+            "  }},\n"
+            '  "reason": ""\n'
+            "}}\n\n"
+            "\u89c4\u5219\uff1a\n"
+            '- "\u6211\u60f3\u6295 AI Agent \u5f00\u53d1\u5c97\u4f4d" \u5e94\u62bd\u53d6\u4e3a target_position\n'
+            '- "\u672c\u79d1\u662f\u6d59\u6c5f\u5de5\u5546\u5927\u5b66\u5927\u6570\u636e\u4e13\u4e1a\uff0c2023\u5e74\u6bd5\u4e1a" \u5e94\u62bd\u53d6\u4e3a education\n'
+            '- "Agentic RAG \u672c\u5730\u77e5\u8bc6\u5e93\u9879\u76ee\uff0c\u7528 FastAPI\u3001React\u3001Ollama\u3001Qdrant \u505a\u7684" \u5e94\u62bd\u53d6\u4e3a project_experience\n'
+            '- "\u5de5\u4f5c\u7ecf\u5386\u6682\u65f6\u5148\u4e0d\u5199" \u5e94\u62bd\u53d6\u4e3a work_experience = "\u6682\u65e0"\n\n'
+            "\u7528\u6237\u8f93\u5165\uff1a{message}"
+        ),
+        {
+            "allowed_slots": json.dumps(allowed_slots, ensure_ascii=False),
+            "current_slots": json.dumps(safe_current_slots, ensure_ascii=False),
+            "message": message,
+        },
     )
 
     raw_result = await call_llm(prompt)
