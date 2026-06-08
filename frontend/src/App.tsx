@@ -1,6 +1,6 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 
-import { ChatOption, sendChatMessage } from "./api";
+import { ChatOption, exportResumeDocx, sendChatMessage } from "./api";
 
 type Message = {
   role: "user" | "assistant";
@@ -12,7 +12,11 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentStage, setCurrentStage] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const canExport = useMemo(() => currentStage === "final" && !!sessionId, [currentStage, sessionId]);
 
   const submitMessage = async (rawMessage: string) => {
     const trimmed = rawMessage.trim();
@@ -31,6 +35,8 @@ function App() {
       });
 
       setSessionId(response.session_id);
+      const stage = typeof response.debug.stage === "string" ? response.debug.stage : "";
+      setCurrentStage(stage);
       setMessages((prev) => [
         ...prev,
         {
@@ -40,10 +46,7 @@ function App() {
         },
       ]);
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "请求失败，请检查后端是否启动。";
+      const message = error instanceof Error ? error.message : "请求失败，请检查后端是否启动。";
 
       setMessages((prev) => [
         ...prev,
@@ -62,6 +65,36 @@ function App() {
     await submitMessage(input);
   };
 
+  const handleExport = async () => {
+    if (!sessionId || isExporting) {
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const result = await exportResumeDocx(sessionId);
+      const url = window.URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename || "resume.docx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导出失败，请稍后重试。";
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `导出失败：${message}`,
+        },
+      ]);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="app">
       <div className="chat-card">
@@ -72,9 +105,7 @@ function App() {
 
         <main className="chat-messages">
           {messages.length === 0 ? (
-            <div className="message assistant">
-              请输入你的需求，我会先进行需求对接。
-            </div>
+            <div className="message assistant">请输入你的需求，我会先进行需求对接。</div>
           ) : (
             messages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`message-group ${message.role}`}>
@@ -99,6 +130,14 @@ function App() {
             ))
           )}
         </main>
+
+        {canExport ? (
+          <div className="export-actions">
+            <button type="button" className="export-button" onClick={() => void handleExport()} disabled={isExporting}>
+              {isExporting ? "导出中..." : "导出 Word 简历"}
+            </button>
+          </div>
+        ) : null}
 
         <form className="chat-form" onSubmit={handleSubmit}>
           <input

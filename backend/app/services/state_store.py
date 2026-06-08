@@ -24,3 +24,7 @@ def save_state(state: AgentState) -> None:
 
 def append_message(state: AgentState, role: str, content: str) -> None:
     state.history.append(AgentMessage(role=role, content=content))
+
+
+def get_state(session_id: str) -> AgentState | None:
+    return _STATE_STORE.get(session_id)

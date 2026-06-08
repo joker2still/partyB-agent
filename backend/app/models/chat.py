@@ -13,3 +13,7 @@ class ChatResponse(BaseModel):
     reply: str
     debug: dict[str, Any]
     options: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ResumeExportRequest(BaseModel):
+    session_id: str = Field(min_length=1)

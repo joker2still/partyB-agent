@@ -116,6 +116,25 @@ input {
   gap: 12px;
 }
 
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.export-button {
+  padding: 10px 16px;
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #111827;
+  cursor: pointer;
+}
+
+.export-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .chat-form input {
   flex: 1;
   padding: 12px;

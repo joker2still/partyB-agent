@@ -9,6 +9,7 @@ backend/data/raw/*
 backend/data/processed/*
 backend/data/qdrant/*
 backend/data/conversations/*
+backend/exports/*
 .vscode
 test_embed.py
 !.gitkeep
