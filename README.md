@@ -79,8 +79,13 @@ The current backend only uses LangChain for:
 - `PromptTemplate`
 - `JsonOutputParser`
 
-LangGraph is not in use yet. The workflow is still driven by the project's own
-state machine and workflow controller.
+LangGraph is not in use for real business execution yet.
+
+## LangGraph Preview
+
+The current LangGraph integration is in preview mode only. It is used to show workflow
+stage routing in debug output, while the real business flow still runs through the
+existing workflow controller. The next step is to migrate real node logic gradually.
 
 ## Frontend
 

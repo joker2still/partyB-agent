@@ -1,4 +1,5 @@
 from app.agents.draft_generator import generate_resume_draft
+from app.agents.langgraph_workflow import run_langgraph_preview
 from app.agents.resume_reviser import revise_resume_draft
 from app.agents.slot_checker import check_missing_slots
 from app.agents.slot_extractor import extract_slots
@@ -84,11 +85,14 @@ def _build_base_debug(state: AgentState, user_message: str) -> dict:
         "workflow_stage_before": state.stage,
         "workflow_stage_after": state.stage,
         "workflow_action": "",
+        "langgraph_enabled": True,
+        "langgraph_preview": {},
     }
 
 
 async def handle_chat_turn(state: AgentState, user_message: str) -> dict:
     debug = _build_base_debug(state, user_message)
+    debug["langgraph_preview"] = run_langgraph_preview(state.stage, state.task_type, user_message)
     options: list[dict] = []
     reply = ""
     workflow_action = ""
