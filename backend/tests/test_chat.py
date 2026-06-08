@@ -99,6 +99,8 @@ def test_chat_routes_resume_request() -> None:
         "work_experience",
         "project_experience",
     ]
+    assert body["debug"]["langgraph_enabled"] is True
+    assert body["debug"]["langgraph_real_workflow"] is True
     assert body["debug"]["workflow_stage_before"] == "start"
     assert body["debug"]["workflow_stage_after"] == "collect_info"
     assert body["debug"]["workflow_action"] == "detect_task"
@@ -145,7 +147,7 @@ def test_chat_collect_info_uses_extracted_slots_and_returns_style_options(monkey
             "parse_success": True,
         }
 
-    monkeypatch.setattr("app.agents.workflow_controller.extract_slots", fake_extract_slots)
+    monkeypatch.setattr("app.agents.langgraph_workflow.extract_slots", fake_extract_slots)
 
     response = client.post(
         "/chat",
@@ -221,7 +223,7 @@ def test_chat_confirm_style_accepts_label_generates_draft_and_enters_revise(monk
             "reason": "generated",
         }
 
-    monkeypatch.setattr("app.agents.workflow_controller.generate_resume_draft", fake_generate_resume_draft)
+    monkeypatch.setattr("app.agents.langgraph_workflow.generate_resume_draft", fake_generate_resume_draft)
 
     response = client.post("/chat", json={"session_id": "style-picked-session", "message": "技术硬核"})
     body = response.json()
@@ -258,7 +260,7 @@ def test_chat_generates_draft_when_stage_is_draft(monkeypatch) -> None:
             "reason": "generated",
         }
 
-    monkeypatch.setattr("app.agents.workflow_controller.generate_resume_draft", fake_generate_resume_draft)
+    monkeypatch.setattr("app.agents.langgraph_workflow.generate_resume_draft", fake_generate_resume_draft)
 
     response = client.post("/chat", json={"session_id": "draft-session", "message": "继续生成"})
     body = response.json()
@@ -292,7 +294,7 @@ def test_chat_revises_resume_draft(monkeypatch) -> None:
             "reason": "revised",
         }
 
-    monkeypatch.setattr("app.agents.workflow_controller.revise_resume_draft", fake_revise_resume_draft)
+    monkeypatch.setattr("app.agents.langgraph_workflow.revise_resume_draft", fake_revise_resume_draft)
 
     response = client.post("/chat", json={"session_id": "revise-session", "message": "更突出项目"})
     body = response.json()

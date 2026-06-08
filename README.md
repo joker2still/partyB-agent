@@ -79,13 +79,23 @@ The current backend only uses LangChain for:
 - `PromptTemplate`
 - `JsonOutputParser`
 
-LangGraph is not in use for real business execution yet.
+LangChain is currently only used for prompt construction and JSON parsing helpers.
 
-## LangGraph Preview
+## LangGraph Workflow
 
-The current LangGraph integration is in preview mode only. It is used to show workflow
-stage routing in debug output, while the real business flow still runs through the
-existing workflow controller. The next step is to migrate real node logic gradually.
+LangGraph now handles the real workflow routing for the resume flow. The current
+workflow graph covers:
+
+- `start`
+- `collect_info`
+- `confirm_style`
+- `draft`
+- `revise`
+- `final`
+- `clarify_task`
+
+The lightweight preview helper is still kept in debug output so stage routing can be
+inspected during development.
 
 ## Frontend
 
